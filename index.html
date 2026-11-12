@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Procedural Sound Synth</title>
+<style>
+:root{--bg:#f4f1ec;--card:#fff;--ink:#1d2430;--mute:#6b7280;--line:#e2ddd4;--acc:#3b6fd4;--viz:#3b6fd4;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#10131a;--card:#181c26;--ink:#e8ebf2;--mute:#8b93a7;--line:#262b39;--acc:#7aa2ff;--viz:#7aa2ff}}
+:root[data-theme="dark"]{--bg:#10131a;--card:#181c26;--ink:#e8ebf2;--mute:#8b93a7;--line:#262b39;--acc:#7aa2ff;--viz:#7aa2ff}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;line-height:1.45}
+main{max-width:640px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:1.4rem;margin:0 0 4px}
+p.sub{margin:0 0 16px;color:var(--mute);font-size:.9rem}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:12px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.row h2{font-size:1rem;margin:0}
+.row small{color:var(--mute)}
+label.sw{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.85rem;color:var(--mute)}
+input[type=range]{width:100%;accent-color:var(--acc);margin:8px 0 2px}
+.ctl{display:grid;grid-template-columns:90px 1fr 70px;align-items:center;gap:8px;font-size:.85rem}
+.ctl output{text-align:right;color:var(--mute);font-variant-numeric:tabular-nums}
+button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:10px;padding:8px 12px;cursor:pointer}
+button.on,button:hover{border-color:var(--acc)}
+button.primary{background:var(--acc);color:#fff;border-color:var(--acc);font-weight:600;padding:12px 20px;width:100%;font-size:1rem}
+.presets{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+canvas{width:100%;height:90px;display:block;border-radius:10px;background:var(--card);border:1px solid var(--line)}
+.note{font-size:.8rem;color:var(--mute);margin-top:10px}
+</style>
+</head>
+<body>
+<main>
+<h1>Procedural Sound Synth</h1>
+<p class="sub">Brown noise, rain and binaural beats, generated live with the Web Audio API. No audio files.</p>
+
+<button id="play" class="primary">▶ Start audio</button>
+<div style="height:12px"></div>
+<canvas id="viz" width="600" height="90"></canvas>
+<div style="height:12px"></div>
+
+<div class="card">
+  <div class="ctl"><span>Master</span><input id="master" type="range" min="0" max="1" step="0.01" value="0.6"><output>60%</output></div>
+</div>
+
+<div class="card" data-layer="brown">
+  <div class="row"><div><h2>Brown noise</h2><small>Deep, rumbling, 1/f² spectrum</small></div>
+  <label class="sw"><input type="checkbox" id="t-brown" checked> on</label></div>
+  <div class="ctl"><span>Level</span><input id="v-brown" type="range" min="0" max="1" step="0.01" value="0.5"><output>50%</output></div>
+  <div class="ctl"><span>Tone</span><input id="tone-brown" type="range" min="200" max="4000" step="10" value="1200"><output>1200 Hz</output></div>
+</div>
+
+<div class="card" data-layer="rain">
+  <div class="row"><div><h2>Rain</h2><small>Filtered noise bed plus random droplets</small></div>
+  <label class="sw"><input type="checkbox" id="t-rain"> on</label></div>
+  <div class="ctl"><span>Level</span><input id="v-rain" type="range" min="0" max="1" step="0.01" value="0.5"><output>50%</output></div>
+  <div class="ctl"><span>Intensity</span><input id="dens-rain" type="range" min="1" max="60" step="1" value="20"><output>20/s</output></div>
+</div>
+
+<div class="card" data-layer="bin">
+  <div class="row"><div><h2>Binaural beats</h2><small>Use headphones: a different tone in each ear</small></div>
+  <label class="sw"><input type="checkbox" id="t-bin"> on</label></div>
+  <div class="ctl"><span>Level</span><input id="v-bin" type="range" min="0" max="1" step="0.01" value="0.3"><output>30%</output></div>
+  <div class="ctl"><span>Carrier</span><input id="carrier" type="range" min="100" max="500" step="1" value="200"><output>200 Hz</output></div>
+  <div class="ctl"><span>Beat</span><input id="beat" type="range" min="0.5" max="40" step="0.5" value="6"><output>6 Hz</output></div>
+  <div class="presets" id="presets">
+    <button data-b="2">Delta 2 Hz · sleep</button>
+    <button data-b="6">Theta 6 Hz · calm</button>
+    <button data-b="10">Alpha 10 Hz · relax</button>
+    <button data-b="20">Beta 20 Hz · focus</button>
+  </div>
+  <p class="note" id="binInfo"></p>
+</div>
+</main>
+
+<script>
+(function(){
+  var ctx=null, master, analyser, nodes={}, dropTimer=null, running=false;
+  var $=function(id){return document.getElementById(id)};
+
+  function noiseBuffer(type){
+    var len=ctx.sampleRate*4, buf=ctx.createBuffer(2,len,ctx.sampleRate);
+    for(var c=0;c<2;c++){
+      var d=buf.getChannelData(c), last=0;
+      for(var i=0;i<len;i++){
+        var w=Math.random()*2-1;
+        if(type==='brown'){last=(last+0.02*w)/1.02;d[i]=last*3.5}
+        else d[i]=w*0.5;
+      }
+    }
+    return buf;
+  }
+  function loopSrc(buf){var s=ctx.createBufferSource();s.buffer=buf;s.loop=true;s.start();return s}
+  function ramp(param,v){param.setTargetAtTime(v,ctx.currentTime,0.05)}
+  function level(name){return $('t-'+name).checked?parseFloat($('v-'+name).value):0}
+
+  function build(){
+    ctx=new (window.AudioContext||window.webkitAudioContext)();
+    master=ctx.createGain();
+    analyser=ctx.createAnalyser();analyser.fftSize=256;
+    master.connect(analyser);analyser.connect(ctx.destination);
+
+    // Brown noise
+    var bs=loopSrc(noiseBuffer('brown')), bf=ctx.createBiquadFilter(), bg=ctx.createGain();
+    bf.type='lowpass';bs.connect(bf);bf.connect(bg);bg.connect(master);
+    nodes.brown={filter:bf,gain:bg};
+
+    // Rain bed
+    var rs=loopSrc(noiseBuffer('white')), hp=ctx.createBiquadFilter(), lp=ctx.createBiquadFilter(), rg=ctx.createGain();
+    hp.type='highpass';hp.frequency.value=900;lp.type='lowpass';lp.frequency.value=9000;
+    rs.connect(hp);hp.connect(lp);lp.connect(rg);rg.connect(master);
+    var dg=ctx.createGain();dg.connect(master);
+    nodes.rain={gain:rg,drops:dg};
+
+    // Binaural pair (OscillatorNode + hard-panned StereoPannerNode)
+    var bg2=ctx.createGain();bg2.connect(master);
+    var oL=ctx.createOscillator(), oR=ctx.createOscillator(), pL=ctx.createStereoPanner(), pR=ctx.createStereoPanner();
+    pL.pan.value=-1;pR.pan.value=1;
+    oL.connect(pL);oR.connect(pR);pL.connect(bg2);pR.connect(bg2);
+    oL.start();oR.start();
+    nodes.bin={l:oL,r:oR,gain:bg2};
+    apply();
+  }
+
+  function apply(){
+    if(!ctx)return;
+    ramp(master.gain,parseFloat($('master').value));
+    ramp(nodes.brown.gain.gain,level('brown')*0.8);
+    ramp(nodes.brown.filter.frequency,parseFloat($('tone-brown').value));
+    ramp(nodes.rain.gain.gain,level('rain')*0.25);
+    ramp(nodes.rain.drops.gain,level('rain')*0.6);
+    var c=parseFloat($('carrier').value), b=parseFloat($('beat').value);
+    ramp(nodes.bin.l.frequency,c);
+    ramp(nodes.bin.r.frequency,c+b);
+    ramp(nodes.bin.gain.gain,level('bin')*0.35);
+  }
+
+  function drop(){
+    if(!running)return;
+    if($('t-rain').checked){
+      var t=ctx.currentTime, o=ctx.createOscillator(), g=ctx.createGain(), p=ctx.createStereoPanner();
+      var f=1200+Math.random()*2800;
+      o.type='sine';o.frequency.setValueAtTime(f,t);o.frequency.exponentialRampToValueAtTime(f*0.4,t+0.05);
+      g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(0.2+Math.random()*0.3,t+0.004);
+      g.gain.exponentialRampToValueAtTime(0.0001,t+0.06);
+      p.pan.value=Math.random()*2-1;
+      o.connect(g);g.connect(p);p.connect(nodes.rain.drops);
+      o.start(t);o.stop(t+0.08);
+    }
+    var rate=parseFloat($('dens-rain').value);
+    dropTimer=setTimeout(drop,(-Math.log(1-Math.random())/rate)*1000);
+  }
+
+  $('play').onclick=function(){
+    if(!ctx)build();
+    if(!running){ctx.resume();running=true;this.textContent='■ Stop audio';drop();draw()}
+    else{running=false;clearTimeout(dropTimer);ctx.suspend();this.textContent='▶ Start audio'}
+  };
+
+  var fmt={master:function(v){return Math.round(v*100)+'%'},'v-brown':null};
+  function out(id,txt){var e=$(id);e.parentNode.querySelector('output').textContent=txt}
+  function refresh(){
+    out('master',Math.round($('master').value*100)+'%');
+    ['brown','rain','bin'].forEach(function(n){out('v-'+n,Math.round($('v-'+n).value*100)+'%')});
+    out('tone-brown',$('tone-brown').value+' Hz');
+    out('dens-rain',$('dens-rain').value+'/s');
+    out('carrier',$('carrier').value+' Hz');
+    out('beat',$('beat').value+' Hz');
+    var c=+$('carrier').value,b=+$('beat').value;
+    $('binInfo').textContent='Left ear '+c+' Hz, right ear '+(c+b)+' Hz, perceived beat '+b+' Hz.';
+    apply();
+  }
+  document.querySelectorAll('input').forEach(function(e){e.addEventListener('input',refresh)});
+  $('presets').onclick=function(e){
+    var b=e.target.closest('button');if(!b)return;
+    $('beat').value=b.dataset.b;$('t-bin').checked=true;refresh();
+  };
+
+  var cv=$('viz'), g2=cv.getContext('2d');
+  function draw(){
+    if(!running)return;
+    requestAnimationFrame(draw);
+    var d=new Uint8Array(analyser.frequencyBinCount);analyser.getByteFrequencyData(d);
+    var w=cv.width,h=cv.height,n=64,bw=w/n;
+    g2.clearRect(0,0,w,h);
+    g2.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--viz');
+    for(var i=0;i<n;i++){var v=d[i]/255*h;g2.fillRect(i*bw+1,h-v,bw-2,v)}
+  }
+  refresh();
+})();
+</script>
+</body>
+</html>
